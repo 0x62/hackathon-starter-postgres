@@ -10,10 +10,10 @@ const chalk = require('chalk');
 const errorHandler = require('errorhandler');
 const lusca = require('lusca');
 const dotenv = require('dotenv');
-const MongoStore = require('connect-mongo')(session);
+const PostgresStore = require('connect-pg-simple')(session);
 const flash = require('express-flash');
 const path = require('path');
-const mongoose = require('mongoose');
+const Sequelize = require('sequelize');
 const passport = require('passport');
 const expressValidator = require('express-validator');
 const expressStatusMonitor = require('express-status-monitor');
@@ -28,12 +28,39 @@ const upload = multer({ dest: path.join(__dirname, 'uploads') });
 dotenv.load({ path: '.env.example' });
 
 /**
- * Controllers (route handlers).
+ * Create Express server.
  */
-const homeController = require('./controllers/home');
-const userController = require('./controllers/user');
-const apiController = require('./controllers/api');
-const contactController = require('./controllers/contact');
+const app = express();
+
+/**
+ * Connect to Postgres.
+ */
+const sequelize = new Sequelize(process.env.POSTGRES_URI)
+const models = require('./models')
+// create sequelize models
+models.init(sequelize)
+// connect to db
+sequelize.authenticate().then(() => {
+  // sync models to db
+  return sequelize.sync()
+}).then(() => {
+  // create session table
+  return sequelize.query(`
+    CREATE TABLE IF NOT EXISTS "session" (
+      "sid" varchar NOT NULL COLLATE "default",
+      "sess" json NOT NULL,
+      "expire" timestamp(6) NOT NULL
+    )
+    WITH (OIDS=FALSE);
+    ALTER TABLE "session" DROP CONSTRAINT IF EXISTS "session_pkey";
+    ALTER TABLE "session" ADD CONSTRAINT "session_pkey" PRIMARY KEY ("sid") NOT DEFERRABLE INITIALLY IMMEDIATE;
+  `)
+}).catch(err => {
+  console.error(err);
+  console.log('%s Postgres connection error. Please make sure Postgres is running.', chalk.red('✗'));
+  process.exit();
+})
+
 
 /**
  * API keys and Passport configuration.
@@ -41,19 +68,12 @@ const contactController = require('./controllers/contact');
 const passportConfig = require('./config/passport');
 
 /**
- * Create Express server.
+ * Controllers (route handlers).
  */
-const app = express();
-
-/**
- * Connect to MongoDB.
- */
-mongoose.connect(process.env.MONGODB_URI, { useNewUrlParser: true });
-mongoose.connection.on('error', (err) => {
-  console.error(err);
-  console.log('%s MongoDB connection error. Please make sure MongoDB is running.', chalk.red('✗'));
-  process.exit();
-});
+const homeController = require('./controllers/home');
+const userController = require('./controllers/user');
+const apiController = require('./controllers/api');
+const contactController = require('./controllers/contact');
 
 /**
  * Express configuration.
@@ -77,9 +97,8 @@ app.use(session({
   saveUninitialized: true,
   secret: process.env.SESSION_SECRET,
   cookie: { maxAge: 1209600000 }, // two weeks in milliseconds
-  store: new MongoStore({
-    url: process.env.MONGODB_URI,
-    autoReconnect: true,
+  store: new PostgresStore({
+    conString: process.env.POSTGRES_URI
   })
 }));
 app.use(passport.initialize());

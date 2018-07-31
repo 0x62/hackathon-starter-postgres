@@ -2,7 +2,7 @@ const { promisify } = require('util');
 const crypto = require('crypto');
 const nodemailer = require('nodemailer');
 const passport = require('passport');
-const User = require('../models/User');
+const { Sequelize, User, ProviderToken } = require('../models');
 
 const randomBytesAsync = promisify(crypto.randomBytes);
 
@@ -92,27 +92,28 @@ exports.postSignup = (req, res, next) => {
     return res.redirect('/signup');
   }
 
-  const user = new User({
-    email: req.body.email,
-    password: req.body.password
-  });
 
-  User.findOne({ email: req.body.email }, (err, existingUser) => {
-    if (err) { return next(err); }
-    if (existingUser) {
-      req.flash('errors', { msg: 'Account with that email address already exists.' });
-      return res.redirect('/signup');
-    }
-    user.save((err) => {
-      if (err) { return next(err); }
-      req.logIn(user, (err) => {
-        if (err) {
-          return next(err);
-        }
-        res.redirect('/');
-      });
-    });
-  });
+  User
+    .findOrCreate({
+      where: {
+        email: req.body.email
+      },
+      defaults: {
+        password: req.body.password
+      }
+    })
+    .then(([user, created]) => {
+      if (!created) {
+        req.flash('errors', { msg: 'Account with that email address already exists.' });
+        return res.redirect('/signup');
+      }
+
+      req.logIn(user, err => {
+        if (err) throw err
+        res.redirect('/')
+      })
+    })
+    .catch(next)
 };
 
 /**
@@ -140,25 +141,27 @@ exports.postUpdateProfile = (req, res, next) => {
     return res.redirect('/account');
   }
 
-  User.findById(req.user.id, (err, user) => {
-    if (err) { return next(err); }
-    user.email = req.body.email || '';
-    user.profile.name = req.body.name || '';
-    user.profile.gender = req.body.gender || '';
-    user.profile.location = req.body.location || '';
-    user.profile.website = req.body.website || '';
-    user.save((err) => {
-      if (err) {
-        if (err.code === 11000) {
-          req.flash('errors', { msg: 'The email address you have entered is already associated with an account.' });
-          return res.redirect('/account');
-        }
-        return next(err);
-      }
+  const user = req.user
+  user.email = req.body.email || ''
+  user.profileName = req.body.name || ''
+  user.profileGender = req.body.gender || ''
+  user.profileLocation = req.body.location || ''
+  user.profileWebsite = req.body.website || ''
+
+  user
+    .save()
+    .then(() => {
       req.flash('success', { msg: 'Profile information has been updated.' });
       res.redirect('/account');
-    });
-  });
+    })
+    .catch(err => {
+      if (err.name === 'UniqueConstraintError') {
+        req.flash('errors', { msg: 'The email address you have entered is already associated with an account.' });
+        return res.redirect('/account');
+      }
+      return next(err)
+    })
+ 
 };
 
 /**
@@ -176,15 +179,16 @@ exports.postUpdatePassword = (req, res, next) => {
     return res.redirect('/account');
   }
 
-  User.findById(req.user.id, (err, user) => {
-    if (err) { return next(err); }
-    user.password = req.body.password;
-    user.save((err) => {
-      if (err) { return next(err); }
+  const user = req.user
+  user.password = req.body.password
+  
+  user
+    .save()
+    .then(() => {
       req.flash('success', { msg: 'Password has been changed.' });
       res.redirect('/account');
-    });
-  });
+    })
+    .catch(next)
 };
 
 /**
@@ -192,12 +196,18 @@ exports.postUpdatePassword = (req, res, next) => {
  * Delete user account.
  */
 exports.postDeleteAccount = (req, res, next) => {
-  User.remove({ _id: req.user.id }, (err) => {
-    if (err) { return next(err); }
-    req.logout();
-    req.flash('info', { msg: 'Your account has been deleted.' });
-    res.redirect('/');
-  });
+  User
+    .destroy({
+      where: {
+        id: req.user.id
+      }
+    })
+    .then(() => {
+      req.logout();
+      req.flash('info', { msg: 'Your account has been deleted.' });
+      res.redirect('/');
+    })
+    .catch(next)
 };
 
 /**
@@ -206,16 +216,19 @@ exports.postDeleteAccount = (req, res, next) => {
  */
 exports.getOauthUnlink = (req, res, next) => {
   const { provider } = req.params;
-  User.findById(req.user.id, (err, user) => {
-    if (err) { return next(err); }
-    user[provider] = undefined;
-    user.tokens = user.tokens.filter(token => token.kind !== provider);
-    user.save((err) => {
-      if (err) { return next(err); }
+
+  ProviderToken
+    .destroy({
+      where: {
+        kind: provider,
+        userId: req.user.id
+      }
+    })
+    .then(() => {
       req.flash('info', { msg: `${provider} account has been unlinked.` });
       res.redirect('/account');
-    });
-  });
+    })
+    .catch(next)
 };
 
 /**
@@ -226,11 +239,17 @@ exports.getReset = (req, res, next) => {
   if (req.isAuthenticated()) {
     return res.redirect('/');
   }
+
   User
-    .findOne({ passwordResetToken: req.params.token })
-    .where('passwordResetExpires').gt(Date.now())
-    .exec((err, user) => {
-      if (err) { return next(err); }
+    .findOne({
+      where: {
+        passwordResetToken: req.params.token,
+        passwordResetExpires: {
+          [Sequelize.Ops.gt]: Date.now()
+        }
+      }
+    })
+    .then(user => {
       if (!user) {
         req.flash('errors', { msg: 'Password reset token is invalid or has expired.' });
         return res.redirect('/forgot');
@@ -238,7 +257,7 @@ exports.getReset = (req, res, next) => {
       res.render('account/reset', {
         title: 'Password Reset'
       });
-    });
+    })
 };
 
 /**
@@ -258,23 +277,33 @@ exports.postReset = (req, res, next) => {
 
   const resetPassword = () =>
     User
-      .findOne({ passwordResetToken: req.params.token })
-      .where('passwordResetExpires').gt(Date.now())
-      .then((user) => {
+      .findOne({
+        where: {
+          passwordResetToken: req.params.token,
+          passwordResetExpires: {
+            [Sequelize.Ops.gt]: Date.now()
+          }
+        }
+      })
+      .then(user => {
         if (!user) {
           req.flash('errors', { msg: 'Password reset token is invalid or has expired.' });
           return res.redirect('back');
         }
-        user.password = req.body.password;
-        user.passwordResetToken = undefined;
-        user.passwordResetExpires = undefined;
-        return user.save().then(() => new Promise((resolve, reject) => {
-          req.logIn(user, (err) => {
-            if (err) { return reject(err); }
-            resolve(user);
-          });
-        }));
-      });
+
+        user.password = req.body.password
+        user.passwordResetToken = null
+        user.passwordResetExpires = null
+
+        return user.save()
+      }).then(user => {
+        return new Promise((r, j) => {
+          req.logIn(user, err => {
+            if (err) return j(err)
+            r(user)
+          })
+        })
+      })
 
   const sendResetPasswordEmail = (user) => {
     if (!user) { return; }
@@ -336,20 +365,24 @@ exports.postForgot = (req, res, next) => {
 
   const setRandomToken = token =>
     User
-      .findOne({ email: req.body.email })
-      .then((user) => {
-        if (!user) {
-          req.flash('errors', { msg: 'Account with that email address does not exist.' });
-        } else {
-          user.passwordResetToken = token;
-          user.passwordResetExpires = Date.now() + 3600000; // 1 hour
-          user = user.save();
+      .findOne({
+        where: {
+          email: req.body.email
         }
-        return user;
-      });
+      })
+      .then(user => {
+        if (!user) {
+          req.flash('errors', { msg: 'Account with that email address does not exist.' })
+          return
+        }
+
+        user.passwordResetToken = token
+        user.passwordResetExpires = Date.now() + 3600000
+        return user.save()
+      })
 
   const sendForgotPasswordEmail = (user) => {
-    if (!user) { return; }
+    if (!user) return
     const token = user.passwordResetToken;
     const transporter = nodemailer.createTransport({
       service: 'SendGrid',

@@ -13,27 +13,27 @@ block content
     .form-group.row
       label.col-md-3.col-form-label.font-weight-bold.text-right(for='name') Name
       .col-md-7
-        input.form-control(type='text', name='name', id='name', value=user.profile.name)
+        input.form-control(type='text', name='name', id='name', value=user.profileName)
     .form-group.row
       label.col-md-3.col-form-label.font-weight-bold.text-right Gender
       .col-sm-6
         label.radio.col-sm-3
-          input(type='radio', checked=user.profile.gender=='male', name='gender', value='male', data-toggle='radio')
+          input(type='radio', checked=user.profileGender=='male', name='gender', value='male', data-toggle='radio')
           span Male
         label.radio.col-sm-3
-          input(type='radio', checked=user.profile.gender=='female', name='gender', value='female', data-toggle='radio')
+          input(type='radio', checked=user.profileGender=='female', name='gender', value='female', data-toggle='radio')
           span Female
         label.radio.col-sm-3
-          input(type='radio', checked=user.profile.gender=='other', name='gender', value='other', data-toggle='radio')
+          input(type='radio', checked=user.profileGender=='other', name='gender', value='other', data-toggle='radio')
           span Other
     .form-group.row
       label.col-md-3.col-form-label.font-weight-bold.text-right(for='location') Location
       .col-md-7
-        input.form-control(type='text', name='location', id='location', value=user.profile.location)
+        input.form-control(type='text', name='location', id='location', value=user.profileLocation)
     .form-group.row
       label.col-md-3.col-form-label.font-weight-bold.text-right(for='website') Website
       .col-md-7
-        input.form-control(type='text', name='website', id='website', value=user.profile.website)
+        input.form-control(type='text', name='website', id='website', value=user.profileWebsite)
     .form-group.row
       label.col-md-3.col-form-label.font-weight-bold.text-right Gravatar
       .col-sm-4
@@ -78,11 +78,6 @@ block content
   .pb-2.mt-2.mb-4.border-bottom
     h3 Linked Accounts
   .form-group
-    .offset-sm-3.col-md-7.pl-2
-      if user.instagram
-        p.mb-1: a.text-danger(href='/account/unlink/instagram') Unlink your Instagram account
-      else
-        p.mb-1: a(href='/auth/instagram') Link your Instagram account
     .offset-sm-3.col-md-7.pl-2
       if user.google
         p.mb-1: a.text-danger(href='/account/unlink/google') Unlink your Google account

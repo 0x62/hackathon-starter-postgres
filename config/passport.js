@@ -1,6 +1,5 @@
 const passport = require('passport');
 const request = require('request');
-const { Strategy: InstagramStrategy } = require('passport-instagram');
 const { Strategy: LocalStrategy } = require('passport-local');
 const { Strategy: FacebookStrategy } = require('passport-facebook');
 const { Strategy: TwitterStrategy } = require('passport-twitter');
@@ -11,35 +10,41 @@ const { Strategy: OpenIDStrategy } = require('passport-openid');
 const { OAuthStrategy } = require('passport-oauth');
 const { OAuth2Strategy } = require('passport-oauth');
 
-const User = require('../models/User');
+const { User } = require('../models');
 
 passport.serializeUser((user, done) => {
   done(null, user.id);
 });
 
 passport.deserializeUser((id, done) => {
-  User.findById(id, (err, user) => {
-    done(err, user);
-  });
+  User
+    .findById(id).then(user => done(null, user))
+    .catch(done)
 });
 
 /**
  * Sign in using Email and Password.
  */
 passport.use(new LocalStrategy({ usernameField: 'email' }, (email, password, done) => {
-  User.findOne({ email: email.toLowerCase() }, (err, user) => {
-    if (err) { return done(err); }
-    if (!user) {
-      return done(null, false, { msg: `Email ${email} not found.` });
-    }
-    user.comparePassword(password, (err, isMatch) => {
-      if (err) { return done(err); }
-      if (isMatch) {
-        return done(null, user);
+  User
+    .findOne({
+      where: {
+        email: email.toLowerCase()
       }
-      return done(null, false, { msg: 'Invalid email or password.' });
-    });
-  });
+    })
+    .then(user => {
+      if (!user) {
+        return done(null, false, { msg: `Invalid email or password` });
+      }
+      
+      return user
+        .comparePassword(password)
+        .then(match => {
+          if (match) return done(null, user)
+          return done(null, false, { msg: 'Invalid email or password' })
+        })
+    })
+    .catch(done)
 }));
 
 /**
@@ -68,53 +73,81 @@ passport.use(new FacebookStrategy({
   passReqToCallback: true
 }, (req, accessToken, refreshToken, profile, done) => {
   if (req.user) {
-    User.findOne({ facebook: profile.id }, (err, existingUser) => {
-      if (err) { return done(err); }
-      if (existingUser) {
-        req.flash('errors', { msg: 'There is already a Facebook account that belongs to you. Sign in with that account or delete it, then link it with your current account.' });
-        done(err);
-      } else {
-        User.findById(req.user.id, (err, user) => {
-          if (err) { return done(err); }
-          user.facebook = profile.id;
-          user.tokens.push({ kind: 'facebook', accessToken });
-          user.profile.name = user.profile.name || `${profile.name.givenName} ${profile.name.familyName}`;
-          user.profile.gender = user.profile.gender || profile._json.gender;
-          user.profile.picture = user.profile.picture || `https://graph.facebook.com/${profile.id}/picture?type=large`;
-          user.save((err) => {
-            req.flash('info', { msg: 'Facebook account has been linked.' });
-            done(err, user);
-          });
-        });
-      }
-    });
-  } else {
-    User.findOne({ facebook: profile.id }, (err, existingUser) => {
-      if (err) { return done(err); }
-      if (existingUser) {
-        return done(null, existingUser);
-      }
-      User.findOne({ email: profile._json.email }, (err, existingEmailUser) => {
-        if (err) { return done(err); }
-        if (existingEmailUser) {
-          req.flash('errors', { msg: 'There is already an account using this email address. Sign in to that account and link it with Facebook manually from Account Settings.' });
-          done(err);
-        } else {
-          const user = new User();
-          user.email = profile._json.email;
-          user.facebook = profile.id;
-          user.tokens.push({ kind: 'facebook', accessToken });
-          user.profile.name = `${profile.name.givenName} ${profile.name.familyName}`;
-          user.profile.gender = profile._json.gender;
-          user.profile.picture = `https://graph.facebook.com/${profile.id}/picture?type=large`;
-          user.profile.location = (profile._json.location) ? profile._json.location.name : '';
-          user.save((err) => {
-            done(err, user);
-          });
+    return User
+      .findOne({
+        where: {
+          facebook: profile.id
         }
-      });
-    });
+      })
+      .then(existingUser => {
+        if (existingUser) {
+          req.flash('errors', { msg: 'There is already a Facebook account that belongs to you. Sign in with that account or delete it, then link it with your current account.' });
+          return done()
+        }
+
+        const user = req.user
+        const providerToken = ProviderToken.build({
+          userId: user.id,
+          kind: 'facebook',
+          accessToken
+        })
+
+        user.facebook = profile.id
+
+        Promise
+          .all([
+            user.save(),
+            providerToken.save()
+          ])
+          .then(([user, token]) => {
+            req.flash('info', { msg: 'Facebook account has been linked.' });
+            done(null, user);
+          })
+      })
+      .catch(done)
   }
+
+  User
+    .findOne({
+      where: {
+        facebook: profile.id
+      }
+    })
+    .then(existingUser => {
+      if (existingUser) {
+        return done(null, existingUser)
+      }
+
+      User
+        .findOne({
+          where: {
+            email: provile._json.email
+          }
+        })
+        .then(existingEmailUser => {
+          if (existingEmailUser) {
+            req.flash('errors', { msg: 'There is already an account using this email address. Sign in to that account and link it with Facebook manually from Account Settings.' });
+            return done();
+          }
+
+          User.create({
+            email: provile._json.email,
+            facebook: profile.id,
+            profileName: `${profile.name.givenName} ${profile.name.familyName}`,
+            profileGender: profile._json.gender,
+            profilePicture: `https://graph.facebook.com/${profile.id}/picture?type=large`,
+            profileLocation: (profile._json.location) ? profile._json.location.name : '',
+            providerTokens: [
+              { kind: 'facebook', accessToken }
+            ]
+          }, {
+            include: [ ProviderToken ]
+          }).then(user => {
+            done(null, user)
+          })
+        })
+    })
+    .catch(done)
 }));
 
 /**
@@ -344,59 +377,6 @@ passport.use(new LinkedInStrategy({
             done(err, user);
           });
         }
-      });
-    });
-  }
-}));
-
-/**
- * Sign in with Instagram.
- */
-passport.use(new InstagramStrategy({
-  clientID: process.env.INSTAGRAM_ID,
-  clientSecret: process.env.INSTAGRAM_SECRET,
-  callbackURL: '/auth/instagram/callback',
-  passReqToCallback: true
-}, (req, accessToken, refreshToken, profile, done) => {
-  if (req.user) {
-    User.findOne({ instagram: profile.id }, (err, existingUser) => {
-      if (err) { return done(err); }
-      if (existingUser) {
-        req.flash('errors', { msg: 'There is already an Instagram account that belongs to you. Sign in with that account or delete it, then link it with your current account.' });
-        done(err);
-      } else {
-        User.findById(req.user.id, (err, user) => {
-          if (err) { return done(err); }
-          user.instagram = profile.id;
-          user.tokens.push({ kind: 'instagram', accessToken });
-          user.profile.name = user.profile.name || profile.displayName;
-          user.profile.picture = user.profile.picture || profile._json.data.profile_picture;
-          user.profile.website = user.profile.website || profile._json.data.website;
-          user.save((err) => {
-            req.flash('info', { msg: 'Instagram account has been linked.' });
-            done(err, user);
-          });
-        });
-      }
-    });
-  } else {
-    User.findOne({ instagram: profile.id }, (err, existingUser) => {
-      if (err) { return done(err); }
-      if (existingUser) {
-        return done(null, existingUser);
-      }
-      const user = new User();
-      user.instagram = profile.id;
-      user.tokens.push({ kind: 'instagram', accessToken });
-      user.profile.name = profile.displayName;
-      // Similar to Twitter API, assigns a temporary e-mail address
-      // to get on with the registration process. It can be changed later
-      // to a valid e-mail address in Profile Management.
-      user.email = `${profile.username}@instagram.com`;
-      user.profile.website = profile._json.data.website;
-      user.profile.picture = profile._json.data.profile_picture;
-      user.save((err) => {
-        done(err, user);
       });
     });
   }
