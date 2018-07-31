@@ -42,7 +42,7 @@ models.init(sequelize)
 // connect to db
 sequelize.authenticate().then(() => {
   // sync models to db
-  return sequelize.sync()
+  return sequelize.sync({ force: true })
 }).then(() => {
   // create session table
   return sequelize.query(`
